@@ -108,6 +108,10 @@ function Manage-AdBlocksOnDNSServer {
         {
             Add    #Attempts to add regardless of the existence of a matching policy, errors are suppressed.
             {
+                if (-not (Test-WmiService -ComputerName $DomainController)) {
+                    Write-ColorOutput -stdout:$true -type fail -text "WMI service unavailable on $DomainController. Skipping Add-DnsServerQueryResolutionPolicy for $fqdn."
+                    return
+                }
                 try
                 {
                     Add-DnsServerQueryResolutionPolicy -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true) -ea SilentlyContinue -ComputerName $DomainController -Name "$IPVersion Block ADs for $fqdn" -action deny -fqdn "EQ,*.$fqdn" -QType $QType
@@ -120,8 +124,12 @@ function Manage-AdBlocksOnDNSServer {
             }
             Remove
             {
-            Get-DnsServerQueryResolutionPolicy -ea Ignore -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true) -ComputerName $DomainController  |? Name -match "$IPVersion Block ADs for $fqdn" |`
-            %{
+                if (-not (Test-WmiService -ComputerName $DomainController)) {
+                    Write-ColorOutput -stdout:$true -type fail -text "WMI service unavailable on $DomainController. Skipping Remove-DnsServerQueryResolutionPolicy for $fqdn."
+                    return
+                }
+                Get-DnsServerQueryResolutionPolicy -ea Ignore -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true) -ComputerName $DomainController  |? Name -match "$IPVersion Block ADs for $fqdn" |`
+                %{
                     $polObj=$_
                     if ($polObj)
                     {
@@ -142,6 +150,10 @@ function Manage-AdBlocksOnDNSServer {
             }
             Check
             {
+                if (-not (Test-WmiService -ComputerName $DomainController)) {
+                    Write-ColorOutput -stdout:$true -type fail -text "WMI service unavailable on $DomainController. Skipping Get-DnsServerQueryResolutionPolicy for $fqdn."
+                    return
+                }
                 $private:_this=Get-DnsServerQueryResolutionPolicy -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true) -ComputerName $DomainController |? Name -match "$IPVersion Block ADs for $fqdn" -ea Ignore
                 if ($private:_this)
                 {
@@ -149,12 +161,15 @@ function Manage-AdBlocksOnDNSServer {
                 }else{
                     Write-ColorOutput -stdout:$true -type fail -text "$DomainController lacks a policy for $fqdn"
                 }
-
             }
-			Get
-			{
-				Get-DnsServerQueryResolutionPolicy -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true) -ComputerName $DomainController |? Name -match "$IPVersion Block ADs for $fqdn" -ea Ignore
-			}
+            Get
+            {
+                if (-not (Test-WmiService -ComputerName $DomainController)) {
+                    Write-ColorOutput -stdout:$true -type fail -text "WMI service unavailable on $DomainController. Skipping Get-DnsServerQueryResolutionPolicy for $fqdn."
+                    return
+                }
+                Get-DnsServerQueryResolutionPolicy -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true) -ComputerName $DomainController |? Name -match "$IPVersion Block ADs for $fqdn" -ea Ignore
+            }
             Update #Checks for Domains and then adds.
             {
                 $_this=Manage-AdBlocksOnDNSServer -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true)-DomainController $DomainController -IPVersion $IPVersion -Action Get -AdServerDomain $fqdn -AdDomainsSource CommandLine
@@ -165,6 +180,10 @@ function Manage-AdBlocksOnDNSServer {
             }
             Flush
             {
+                if (-not (Test-WmiService -ComputerName $DomainController)) {
+                    Write-ColorOutput -stdout:$true -type fail -text "WMI service unavailable on $DomainController. Skipping Flush operation."
+                    return
+                }
                 $remove=Get-DnsServerQueryResolutionPolicy -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true) -ComputerName $DomainController
                 $remove | Remove-DnsServerQueryResolutionPolicy -ComputerName $DomainController -Confirm:$False -Force
             }
@@ -191,4 +210,47 @@ param(
                 $host.ui.RawUI.ForegroundColor=$ofg
 }
 
-Export-ModuleMember -Function Manage-AdBlocksOnDNSServer
+function Test-WmiService {
+    <#
+    .SYNOPSIS
+        Tests if the WMI (Winmgmt) service is running and healthy on a local or remote computer.
+    .DESCRIPTION
+        Checks the status of the Winmgmt (WMI) service and attempts a simple WMI query to verify functionality, using the provided computer name (DomainController argument).
+    .PARAMETER ComputerName
+        The name of the computer to test WMI on. Defaults to 'localhost'.
+    .OUTPUTS
+        [bool] True if WMI is running and responsive, otherwise False.
+    #>
+    param(
+        [string]$ComputerName = 'localhost'
+    )
+    try {
+        $service = Get-Service -Name 'Winmgmt' -ComputerName $ComputerName -ErrorAction Stop
+        if ($service.Status -ne 'Running') {
+            Write-Verbose "WMI service is not running on $ComputerName. Attempting to start it."
+            try {
+                Start-Service -Name 'Winmgmt' -ComputerName $ComputerName -ErrorAction Stop
+                # Re-check status
+                $service = Get-Service -Name 'Winmgmt' -ComputerName $ComputerName -ErrorAction Stop
+                if ($service.Status -eq 'Running') {
+                    Write-Verbose "WMI service started successfully on $ComputerName."
+                    return $true
+                } else {
+                    Write-Verbose "Failed to start WMI service on $ComputerName."
+                    return $false
+                }
+            } catch {
+                Write-Verbose ("Failed to start WMI service on {0}: {1}" -f $ComputerName, $_)
+                return $false
+            }
+        }
+        # Try a simple WMI query
+        $null = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $ComputerName -ErrorAction Stop
+        return $true
+    } catch {
+        Write-Verbose ("WMI service test failed on {0}: {1}" -f $ComputerName, $_)
+        return $false
+    }
+}
+
+Export-ModuleMember -Function Manage-AdBlocksOnDNSServer,Test-WmiService
